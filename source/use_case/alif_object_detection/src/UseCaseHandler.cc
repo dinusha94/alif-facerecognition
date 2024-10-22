@@ -158,6 +158,7 @@ using namespace arm::app::object_detection;
 
         // auto croppedImages = context.Get<std::shared_ptr<std::vector<std::vector<uint8_t>>>>("cropped_images");
         auto croppedImages = context.Get<std::shared_ptr<std::vector<CroppedImageData>>>("cropped_images");
+        bool faceDetected = false;
 
         if (!croppedImages) {
             printf_err("Failed to retrieve cropped_images from context.\n");
@@ -169,7 +170,7 @@ using namespace arm::app::object_detection;
             // Calculate size of the cropped image based on the detection box dimensions
             int croppedWidth = result.m_w;
             int croppedHeight = result.m_h;
-            info("Cropped image width: %d, height: %d\n", croppedWidth, croppedHeight);
+            // info("Cropped image width: %d, height: %d\n", croppedWidth, croppedHeight);
 
             // Allocate memory for the cropped image (assuming RGB format, hence *3 for channels)
             std::vector<uint8_t> croppedImage(croppedWidth * croppedHeight * 3);
@@ -181,14 +182,20 @@ using namespace arm::app::object_detection;
             // Crop the detected object from the current image
             if (CropDetectedObject(currImage, inputImgCols, inputImgRows, result, croppedImage.data())) {
                 // Handle the cropped image (display, save, further processing, etc.)
-                info("Cropped object detected at {x=%d, y=%d, w=%d, h=%d}\n", result.m_x0, result.m_y0, result.m_w, result.m_h);
+                // info("Cropped object detected at {x=%d, y=%d, w=%d, h=%d}\n", result.m_x0, result.m_y0, result.m_w, result.m_h);
 
                 // Save the cropped image into the context
                 // croppedImages->push_back(std::move(croppedImage)); 
                 croppedImages->emplace_back(CroppedImageData{ std::move(croppedImage), croppedWidth, croppedHeight });
+                faceDetected = true;
 
                 // Display the cropped image
                 // DisplayCroppedImage(croppedImages.back(), croppedWidth, croppedHeight);
+
+                 if (faceDetected) {
+                    context.Set<bool>("face_detected_flag", true);  // Set flag to true when object is detected
+                    break; // exit from the for loop
+                }
 
             } else {
                 info("Failed to crop detected object at {x=%d, y=%d, w=%d, h=%d}\n", result.m_x0, result.m_y0, result.m_w, result.m_h);
@@ -202,11 +209,11 @@ using namespace arm::app::object_detection;
     bool ClassifyImageHandler(ApplicationContext& ctx) {
 
         auto& profiler = ctx.Get<Profiler&>("profiler");
-        // auto& model = ctx.Get<Model&>("recog_model");
+        auto& model = ctx.Get<Model&>("recog_model");
 
         // Retrieve the name 
         auto& my_name = ctx.Get<std::string&>("my_name");
-        info("Name : %s \n", my_name.c_str());
+        info("Person Name : %s \n", my_name.c_str());
 
         // Retrieve the cropped_images vector from the context
         // auto croppedImages = ctx.Get<std::shared_ptr<std::vector<std::vector<uint8_t>>>>("cropped_images");
@@ -219,24 +226,20 @@ using namespace arm::app::object_detection;
             return false;
         }
 
-        info("Processing %zu cropped images...\n", croppedImages->size());
+        // info("Processing %zu cropped images...\n", croppedImages->size());
 
         // Retrieve the face embedding collection
         auto& embeddingCollection = ctx.Get<FaceEmbeddingCollection&>("face_embedding_collection");
 
-        // if (!model.IsInited()) {
-        //     printf_err("Model is not initialised! Terminating processing.\n");
-        //     return false;
-        // }
+        if (!model.IsInited()) {
+            printf_err("Model is not initialised! Terminating processing.\n");
+            return false;
+        }
 
         const uint32_t nCols       = MIMAGE_X;
         const uint32_t nRows       = MIMAGE_Y;
 
         // Process the current set of cropped images
-
-        // for (size_t i = 0; i < croppedImages->size(); ++i) {
-        //     const auto& image = (*croppedImages)[i];
-
         for (const auto& croppedImageData: *croppedImages) {
             // Access the image, width, and height
             const std::vector<uint8_t>& image = croppedImageData.image;
@@ -260,51 +263,45 @@ using namespace arm::app::object_detection;
                                             3 * 8);
 
             // Do inference
-            // TfLiteTensor* inputTensor = model.GetInputTensor(0);
-            // TfLiteTensor* outputTensor = model.GetOutputTensor(0);
+            TfLiteTensor* inputTensor = model.GetInputTensor(0);
+            TfLiteTensor* outputTensor = model.GetOutputTensor(0);
 
-            // if (!inputTensor->dims) {
-            //     printf_err("Invalid input tensor dims\n");
-            //     return false;
-            // } else if (inputTensor->dims->size < 4) {
-            //     printf_err("Input tensor dimension should be = 4\n");
-            //     return false;
-            // }
+            if (!inputTensor->dims) {
+                printf_err("Invalid input tensor dims\n");
+                return false;
+            } else if (inputTensor->dims->size < 4) {
+                printf_err("Input tensor dimension should be = 4\n");
+                return false;
+            }
 
             // /* Set up pre and post-processing. */
-            // ImgClassPreProcess preProcess = ImgClassPreProcess(inputTensor, model.IsDataSigned());
+            ImgClassPreProcess preProcess = ImgClassPreProcess(inputTensor, model.IsDataSigned());
 
-            // const size_t imgSz = inputTensor->bytes;
+            const size_t imgSz = inputTensor->bytes;
 
-            // /* Run the pre-processing, inference and post-processing. */
-            // if (!preProcess.DoPreProcess(dstImage, imgSz)) {
-            //     printf_err("Pre-processing failed.");
-            //     return false;
-            // }
+            /* Run the pre-processing, inference and post-processing. */
+            if (!preProcess.DoPreProcess(dstImage, imgSz)) {
+                printf_err("Pre-processing failed.");
+                return false;
+            }
             
-            // info("Inferencing IN \n");
-            // // PrintTfLiteTensor(inputTensor);
-
-            // if (!RunInference(model, profiler)) {
-            //     printf_err("Inference failed.");
-            //     return false;
-            // }
-
-            // info("Inferencing out \n");
-            // // PrintTfLiteTensor(outputTensor);
+            if (!RunInference(model, profiler)) {
+                printf_err("Inference failed.");
+                return false;
+            }
 
             // Convert the output tensor to a vector of int8
-            // std::vector<int8_t> int8_feature_vector(outputTensor->data.int8, 
-            //                                         outputTensor->data.int8 + outputTensor->bytes);
+            std::vector<int8_t> int8_feature_vector(outputTensor->data.int8, 
+                                                    outputTensor->data.int8 + outputTensor->bytes);
 
-            // // Save the feature vector along with the name in the embedding collection
-            // embeddingCollection.AddEmbedding(my_name, int8_feature_vector);
+            // Save the feature vector along with the name in the embedding collection
+            embeddingCollection.AddEmbedding(my_name, int8_feature_vector);
 
             free(dstImage);
 
         }
 
-        // embeddingCollection.PrintEmbeddings();
+        embeddingCollection.PrintEmbeddings();
 
         // Clear the cropped images after processing to prepare for the next set
         if (croppedImages) {
@@ -432,9 +429,9 @@ using namespace arm::app::object_detection;
 
             const size_t copySz = inputTensor->bytes;
 
-#if SHOW_INF_TIME
-        uint32_t inf_prof = Get_SysTick_Cycle_Count32();
-#endif
+// #if SHOW_INF_TIME
+//         uint32_t inf_prof = Get_SysTick_Cycle_Count32();
+// #endif
 
             /* Run the pre-processing, inference and post-processing. */
             if (!preProcess.DoPreProcess(currImage, copySz)) {
@@ -461,12 +458,12 @@ using namespace arm::app::object_detection;
                 return false;
             }
 
-#if SHOW_INF_TIME
-            inf_prof = Get_SysTick_Cycle_Count32() - inf_prof;
-            lv_label_set_text_fmt(ScreenLayoutLabelObject(2), "Inference time: %.3f ms", (double)inf_prof / SystemCoreClock * 1000);
-            lv_label_set_text_fmt(ScreenLayoutLabelObject(3), "Inferences / sec: %.2f", (double) SystemCoreClock / inf_prof);
-            //lv_label_set_text_fmt(ScreenLayoutLabelObject(3), "Inferences / second: %.2f", (double) SystemCoreClock / (inf_loop_time_end - inf_loop_time_start));
-#endif
+// #if SHOW_INF_TIME
+//             inf_prof = Get_SysTick_Cycle_Count32() - inf_prof;
+//             lv_label_set_text_fmt(ScreenLayoutLabelObject(2), "Inference time: %.3f ms", (double)inf_prof / SystemCoreClock * 1000);
+//             lv_label_set_text_fmt(ScreenLayoutLabelObject(3), "Inferences / sec: %.2f", (double) SystemCoreClock / inf_prof);
+//             //lv_label_set_text_fmt(ScreenLayoutLabelObject(3), "Inferences / second: %.2f", (double) SystemCoreClock / (inf_loop_time_end - inf_loop_time_start));
+// #endif
 
             lv_label_set_text_fmt(ScreenLayoutLabelObject(0), "Faces Detected: %i", results.size());
 
@@ -475,16 +472,16 @@ using namespace arm::app::object_detection;
 
         } // ScopedLVGLLock
 
-#if VERIFY_TEST_OUTPUT
-        DumpTensor(modelOutput0);
-        DumpTensor(modelOutput1);
-#endif /* VERIFY_TEST_OUTPUT */
+// #if VERIFY_TEST_OUTPUT
+//         DumpTensor(modelOutput0);
+//         DumpTensor(modelOutput1);
+// #endif /* VERIFY_TEST_OUTPUT */
 
-        if (!PresentInferenceResult(results)) {
-            return false;
-        }
+        // if (!PresentInferenceResult(results)) {
+        //     return false;
+        // }
 
-        profiler.PrintProfilingResult();
+        // profiler.PrintProfilingResult();
 
         return true;
     }
